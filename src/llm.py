@@ -287,7 +287,10 @@ def _reconcile_batch_results(
 
 
 async def _score_single_batch(
-    entries: List[Dict], config: Dict, batch_index: int = 0
+    entries: List[Dict],
+    config: Dict,
+    batch_index: int = 0,
+    retry_missing: bool = True,
 ) -> Tuple[List[Dict], List[str]]:
     """对单批entries进行评分"""
     # 从config获取批量评分提示词路径
@@ -303,7 +306,29 @@ async def _score_single_batch(
         if not isinstance(results, list):
             raise ValueError(f"LLM返回的不是数组: {type(results)}")
 
-        return _reconcile_batch_results(entries, results, batch_index)
+        matched_results, errors = _reconcile_batch_results(
+            entries, results, batch_index
+        )
+
+        if errors and retry_missing:
+            matched_links = {
+                item.get("link") for item in matched_results if item.get("link")
+            }
+            missing_entries = [
+                entry for entry in entries if entry.get("link") not in matched_links
+            ]
+            if missing_entries:
+                retry_results, retry_errors = await _score_single_batch(
+                    missing_entries,
+                    config,
+                    batch_index=batch_index,
+                    retry_missing=False,
+                )
+                if not retry_errors:
+                    return matched_results + retry_results, []
+                return matched_results + retry_results, errors
+
+        return matched_results, errors
 
     except Exception as e:
         error_message = f"批次{batch_index + 1} 评分失败: {e}"

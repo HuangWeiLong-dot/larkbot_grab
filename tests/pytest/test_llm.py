@@ -226,9 +226,10 @@ class TestImmediatePush:
     async def test_generate_immediate_push_failure_returns_error(
         self, sample_entries, sample_config
     ):
-        with patch("llm.load_prompt", return_value="prompt"), patch(
-            "llm.call_llm", new_callable=AsyncMock
-        ) as mock_call:
+        with (
+            patch("llm.load_prompt", return_value="prompt"),
+            patch("llm.call_llm", new_callable=AsyncMock) as mock_call,
+        ):
             mock_call.side_effect = RuntimeError("boom")
 
             content, error = await generate_immediate_push(
@@ -309,7 +310,33 @@ class TestScoreBatch:
         assert "匹配1" in errors[0]
 
     @pytest.mark.asyncio
-    async def test_score_single_batch_keeps_full_results(self, sample_entries, sample_config):
+    async def test_score_single_batch_retries_missing_entries(
+        self, sample_entries, sample_config
+    ):
+        entries = sample_entries[:2]
+        first_response = json.dumps(
+            [{"link": entries[0]["link"], "score": 91}], ensure_ascii=False
+        )
+        retry_response = json.dumps(
+            [{"link": entries[1]["link"], "score": 73}], ensure_ascii=False
+        )
+
+        with patch("llm.call_llm", new_callable=AsyncMock) as mock_call:
+            mock_call.side_effect = [first_response, retry_response]
+            results, errors = await _score_single_batch(entries, sample_config["llm"])
+
+        assert [result["link"] for result in results] == [
+            entries[0]["link"],
+            entries[1]["link"],
+        ]
+        assert [result["score"] for result in results] == [91, 73]
+        assert errors == []
+        assert mock_call.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_score_single_batch_keeps_full_results(
+        self, sample_entries, sample_config
+    ):
         entries = sample_entries[:3]
         llm_results = [
             {
@@ -326,5 +353,7 @@ class TestScoreBatch:
             results, errors = await _score_single_batch(entries, sample_config["llm"])
 
         assert len(results) == 3
-        assert [result["link"] for result in results] == [entry["link"] for entry in entries]
+        assert [result["link"] for result in results] == [
+            entry["link"] for entry in entries
+        ]
         assert errors == []
